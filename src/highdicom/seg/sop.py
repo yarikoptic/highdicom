@@ -362,11 +362,13 @@ class Segmentation(SOPClass):
         self.SourceImageSequence: List[Dataset] = []
         referenced_series: Dict[str, List[Dataset]] = defaultdict(list)
         for img in source_images:
-            if is_multiframe:
+            if is_multiframe and plane_positions is None:
                 num_frames = int(getattr(img, 'NumberOfFrames', '1'))
                 if num_frames != pixel_array.shape[0]:
                     raise ValueError(
-                        'If source images are multiple-frame images, then '
+                        'If source images are multiple-frame images and '
+                        'explicit plane positions are not provided for the '
+                        'segmentation pixel array, then '
                         f'each image must contain n={pixel_array.shape[0]} '
                         f'frames. However, image "{img.SOPInstanceUID}" '
                         f'contains n={num_frames} frames.'
@@ -387,12 +389,13 @@ class Segmentation(SOPClass):
         # Common Instance Reference
         self.ReferencedSeriesSequence: List[Dataset] = []
         for series_instance_uid, referenced_images in referenced_series.items():
-            if not is_multiframe:
+            if not is_multiframe and plane_positions is None:
                 if len(referenced_images) != pixel_array.shape[0]:
                     raise ValueError(
-                        'If source images are single-frame images, then '
-                        f'then n={pixel_array.shape[0]} source images must be '
-                        'provided per series. '
+                        'If source images are single-frame images and explicit '
+                        'plane positions are not provided for the segmentation '
+                        f'pixel array, then n={pixel_array.shape[0]} source '
+                        'images must be provided per series. '
                         f'However, n={len(referenced_images)} images were '
                         f'provided for series "{series_instance_uid}".'
                     )
