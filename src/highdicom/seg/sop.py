@@ -99,11 +99,18 @@ class Segmentation(SOPClass):
         """
         Parameters
         ----------
-        source_images: Sequence[pydicom.dataset.Dataset]
+        source_images: Union[Sequence[pydicom.dataset.Dataset], Sequence[Sequence[pydicom.dataset.Dataset]]]
             One or more single- or multi-frame images (or metadata of images)
-            from which the segmentation was derived. The images must have the
-            same dimensions (rows, columns) and orientation, have the same frame
-            of reference, and contain the same number of frames.
+            from which the segmentation was derived.
+
+            The images may come from multiple series, but if so images from
+            each series must be grouped into lists (or list-like container).
+
+            Within each series, the images must have the same dimensions (rows,
+            columns) and orientation, have the same frame of reference, and
+            contain the same number of frames. Additionally, these
+            characteristics  must be shared between series unless explicit
+            plane_positions and a plane_orientation are provided.
         pixel_array: numpy.ndarray
             Array of segmentation pixel data of boolean, unsigned integer or
             floating point data type representing a mask image. The array may
@@ -1155,6 +1162,35 @@ class Segmentation(SOPClass):
             raise TypeError('Pixel array has an invalid data type.')
 
         return pixel_array, segments_overlap
+
+    @staticmethod
+    def _source_image_checks(
+        source_images: Union[
+            Sequence[pydicom.dataset.Dataset],
+            Sequence[Sequence[pydicom.dataset.Dataset]]
+        ]
+    ) -> List[List[pydicom.dataset.Dataset]]:
+        """Perform some basic checks on the source images."""
+        is_dataset = [isinstance(item, Dataset) for item in source_images]
+
+        if all(is_dataset):
+            source_images = [source_image]
+        elif any(is_dataset):
+            raise TypeError(
+                "Items of source_images must either all be of type "
+                "pydicom.Dataset or all of type Sequence[pydicom.Dataset]. "
+                "A mixture of the two is not valid."
+            )
+        else:
+            for item in source_images:
+                if not isinstance(item, Sequence):
+                    raise TypeError(
+                        "Items of source_images should either be of type "
+                        "pydicom.Dataset or Sequence[pydicom.Dataset]. Found "
+                        f"{type(item)}."
+                    )
+
+        return source_images
 
     @staticmethod
     def _omit_empty_frames(
