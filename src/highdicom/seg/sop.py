@@ -1218,8 +1218,11 @@ class Segmentation(SOPClass):
         # Segmentation Image
         self.ImageType = ['DERIVED', 'PRIMARY']
         self.SamplesPerPixel = 1
-        self.PhotometricInterpretation = 'MONOCHROME2'
         self.PixelRepresentation = 0
+        if segmentation_type == SegmentationTypeValues.LABELMAP:
+            self.PhotometricInterpretation = 'PALETTE COLOR'
+        else:
+            self.PhotometricInterpretation = 'MONOCHROME2'
 
         if content_label is not None:
             _check_code_string(content_label)
@@ -1266,15 +1269,13 @@ class Segmentation(SOPClass):
                 )
             self.MaximumFractionalValue = max_fractional_value
         elif self.SegmentationType == SegmentationTypeValues.LABELMAP.value:
-            if pixel_array.dtype in (np.bool_, np.uint8, np.uint16, np.uint32):
-            else:
-                raise ValueError(
-                    'Parameter "pixel_array" must have dtype np.bool_, np.uint8 '
-                    'np.uint16, or np.uint32.'
-                )
-            self.BitsAllocated = np.iinfo(pixel_array.dtype).bits
+            # Decide on the output datatype and update the image metadata
+            # accordingly
+            labelmap_dtype = _get_unsigned_dtype(len(segment_descriptions))
+            self.BitsAllocated = np.iinfo(labelmap_dtype).bits
             self.HighBit = self.BitsAllocated - 1
-            # TODO check transfer syntax here
+            self.BitsStored = self.BitsAllocated
+
         else:
             raise ValueError(
                 'Unknown segmentation type "{}"'.format(segmentation_type)
@@ -1322,8 +1323,12 @@ class Segmentation(SOPClass):
             if plane_orientation is None:
                 plane_orientation = source_plane_orientation
 
+        include_segment_number = (
+            segmentation_type != SegmentationTypeValues.LABELMAP
+        )
         self.DimensionIndexSequence = DimensionIndexSequence(
-            coordinate_system=self._coordinate_system
+            coordinate_system=self._coordinate_system,
+            include_segment_number=include_segment_number,
         )
         dimension_organization = Dataset()
         dimension_organization.DimensionOrganizationUID = \
@@ -1367,17 +1372,11 @@ class Segmentation(SOPClass):
 
         # Combine segments to create a labelmap image if needed
         if segmentation_type == SegmentationTypeValues.LABELMAP:
-            if pixel_array.ndim == 4:
 
-                # Decide on the output datatype and update the image metadata
-                # accordingly (this overwrites values from earlier)
-                output_dtype = _get_unsigned_dtype(number_of_segments)
-                self.BitsAllocated = np.iinfo(output_dtype).bits
-                self.HighBit = self.BitsAllocated - 1
-                self.BitsStored = self.BitsAllocated
+            if pixel_array.ndim == 4:
                 pixel_array = self._combine_segments(
                     pixel_array,
-                    output_dtype=output_dtype
+                    labelmap_dtype=labelmap_dtype
                 )
 
         if has_ref_frame_uid:
@@ -1474,15 +1473,29 @@ class Segmentation(SOPClass):
         # sequence at the end
         pffg_sequence: List[Dataset] = []
 
-        for segment_number in described_segment_numbers:
-            # Pixel array for just this segment
-            segment_array = self._get_segment_array(
-                pixel_array,
-                segment_number=segment_number,
-                number_of_segments=number_of_segments,
-                segmentation_type=segmentation_type,
-                max_fractional_value=max_fractional_value,
-            )
+        # We want the larger loop to work in the labelmap cases (where segments
+        # are dealt with together) and the other cases (where segments are
+        # dealt with separately). So we define a suitable iterable here for
+        # each case
+        segments_iterable = (
+            [None] if segmentation_type == SegmentationTypeValues.LABELMAP
+            else described_segment_numbers
+        )
+
+        for segment_number in segments_iterable:
+
+            if segment_number is None:
+                # Deal with all segments at once
+                segment_array = pixel_array
+            else:
+                # Pixel array for just this segment
+                segment_array = self._get_segment_array(
+                    pixel_array,
+                    segment_number=segment_number,
+                    number_of_segments=number_of_segments,
+                    segmentation_type=segmentation_type,
+                    max_fractional_value=max_fractional_value,
+                )
 
             for plane_index in plane_sort_index:
                 # Index of this frame in the original list of source frames
@@ -1492,17 +1505,25 @@ class Segmentation(SOPClass):
                 # there may still be slices in which this specific segment is
                 # absent. Such frames should be removed
                 if (
-                    omit_empty_frames and not
-                    np.any(segment_array[source_image_index])
+                    segment_number is not None
+                    and omit_empty_frames
+                    and not np.any(segment_array[source_image_index])
                 ):
                     logger.debug(
                         f'skip empty plane {plane_index} of segment '
                         f'#{segment_number}'
                     )
                     continue
-                logger.debug(
-                    f'add plane #{plane_index} for segment #{segment_number}'
-                )
+
+                # Log a debug message
+                if segment_number is None:
+                    msg = f'add plane #{plane_index}' 
+                else:
+                    msg = (
+                        f'add plane #{plane_index} for segment '
+                        f'#{segment_number}'
+                    )
+                logger.debug(msg)
 
                 # Get the item of the PerFrameFunctionalGroupsSequence for this
                 # segmentation frame
@@ -1923,7 +1944,7 @@ class Segmentation(SOPClass):
     @staticmethod
     def _combine_segments(
         pixel_array: np.ndarray,
-        output_dtype: type,
+        labelmap_dtype: type,
     ):
         """Combine multiple segments into a labelmap.
 
@@ -1932,7 +1953,7 @@ class Segmentation(SOPClass):
         pixel_array: np.ndarray
             Segmentation pixel array with segments stacked along dimension 3.
             Should consist of only values 0 and 1.
-        output_dtype: type
+        labelmap_dtype: type
             Numpy data type to use for the output array and intermediate
             calculations.
 
@@ -1956,9 +1977,9 @@ class Segmentation(SOPClass):
             # value
             # Carefully control the dtype here to avoid creating huge
             # interemdiate arrays
-            indices = np.zeros(pixel_array.shape[:3], dtype=output_dtype)
+            indices = np.zeros(pixel_array.shape[:3], dtype=labelmap_dtype)
             indices = pixel_array.argmax(axis=3, out=indices) + 1
-            is_non_empty = np.zeros(pixel_array.shape[:3], dtype=output_dtype)
+            is_non_empty = np.zeros(pixel_array.shape[:3], dtype=labelmap_dtype)
             is_non_empty = pixel_array.max(axis=3, out=is_non_empty)
             pixel_array = indices * is_non_empty
 
@@ -2159,7 +2180,7 @@ class Segmentation(SOPClass):
 
     @staticmethod
     def _get_pffg_item(
-        segment_number: int,
+        segment_number: Optional[int],
         index_values: List[int],
         plane_position: PlanePositionSequence,
         source_images: List[Dataset],
@@ -2174,8 +2195,9 @@ class Segmentation(SOPClass):
 
         Parameters
         ----------
-        segment_number: int
-            Segment number of this segmentation frame.
+        segment_number: Optional[int]
+            Segment number of this segmentation frame. If None, this is a
+            LABELMAP segmentation in which each frame has no segment number.
         index_values: List[int]
             Dimension index values (except segment number) for this frame.
         plane_position: highdicom.seg.PlanePositionSequence
@@ -2202,9 +2224,11 @@ class Segmentation(SOPClass):
         pffg_item = Dataset()
         frame_content_item = Dataset()
 
-        frame_content_item.DimensionIndexValues = (
-            [segment_number] + index_values
-        )
+        if segment_number is None:
+            all_index_values = all_index_values
+        else:
+            all_index_values = [segment_number] + index_values
+        frame_content_item.DimensionIndexValues = all_index_values
         pffg_item.FrameContentSequence = [frame_content_item]
         if has_ref_frame_uid:
             if coordinate_system == CoordinateSystemNames.SLIDE:
@@ -2254,11 +2278,12 @@ class Segmentation(SOPClass):
         else:
             logger.debug('spatial locations not preserved')
 
-        identification = Dataset()
-        identification.ReferencedSegmentNumber = segment_number
-        pffg_item.SegmentIdentificationSequence = [
-            identification,
-        ]
+        if segment_number is not None:
+            identification = Dataset()
+            identification.ReferencedSegmentNumber = segment_number
+            pffg_item.SegmentIdentificationSequence = [
+                identification,
+            ]
 
         return pffg_item
 
