@@ -1372,12 +1372,19 @@ class Segmentation(SOPClass):
 
         # Combine segments to create a labelmap image if needed
         if segmentation_type == SegmentationTypeValues.LABELMAP:
+            if segments_overlap == SegmentsOverlapValues.YES:
+                raise ValueError(
+                    'It is not possible to store a Segmentation with '
+                    'SegmentationType "LABELMAP" if segments overlap.'
+                )
 
             if pixel_array.ndim == 4:
                 pixel_array = self._combine_segments(
                     pixel_array,
                     labelmap_dtype=labelmap_dtype
                 )
+            else:
+                pixel_array = pixel_array.astype(labelmap_dtype)
 
         if has_ref_frame_uid:
             if plane_positions is None:
@@ -1964,24 +1971,21 @@ class Segmentation(SOPClass):
             into a labelmap.
 
         """
-        if segments_overlap == SegmentsOverlapValue.YES:
-            raise ValueError(
-                'It is not possible to store a Segmentation with '
-                'SegmentationType "LABELMAP" if segments overlap.'
-            )
+        if pixel_array.shape[3] == 1:
+            # Optimization in case of one class
+            return pixel_array[:, :, :, 0].astype(labelmap_dtype)
 
-        if (pixel_array.ndim == 4):
-            # Take the indices along axis 3. However this does not
-            # distinguish between pixels that are empty and pixels that
-            # have class 1. Therefore need to multiply this by the max
-            # value
-            # Carefully control the dtype here to avoid creating huge
-            # interemdiate arrays
-            indices = np.zeros(pixel_array.shape[:3], dtype=labelmap_dtype)
-            indices = pixel_array.argmax(axis=3, out=indices) + 1
-            is_non_empty = np.zeros(pixel_array.shape[:3], dtype=labelmap_dtype)
-            is_non_empty = pixel_array.max(axis=3, out=is_non_empty)
-            pixel_array = indices * is_non_empty
+        # Take the indices along axis 3. However this does not
+        # distinguish between pixels that are empty and pixels that
+        # have class 1. Therefore need to multiply this by the max
+        # value
+        # Carefully control the dtype here to avoid creating huge
+        # interemdiate arrays
+        indices = np.zeros(pixel_array.shape[:3], dtype=labelmap_dtype)
+        indices = pixel_array.argmax(axis=3, out=indices) + 1
+        is_non_empty = np.zeros(pixel_array.shape[:3], dtype=labelmap_dtype)
+        is_non_empty = pixel_array.max(axis=3, out=is_non_empty)
+        pixel_array = indices * is_non_empty
 
         return pixel_array
 
@@ -2225,7 +2229,7 @@ class Segmentation(SOPClass):
         frame_content_item = Dataset()
 
         if segment_number is None:
-            all_index_values = all_index_values
+            all_index_values = index_values
         else:
             all_index_values = [segment_number] + index_values
         frame_content_item.DimensionIndexValues = all_index_values
