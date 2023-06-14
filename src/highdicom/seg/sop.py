@@ -1545,6 +1545,7 @@ class Segmentation(SOPClass):
                     plane_position_values=plane_position_values,
                     has_ref_frame_uid=has_ref_frame_uid,
                     coordinate_system=self._coordinate_system,
+                    segmentation_type=segmentation_type,
                 )
                 pffg_item = self._get_pffg_item(
                     segment_number=segment_number,
@@ -2122,6 +2123,7 @@ class Segmentation(SOPClass):
         plane_position_values: np.ndarray,
         has_ref_frame_uid: bool,
         coordinate_system: Optional[CoordinateSystemNames],
+        segmentation_type: SegmentationTypeValues,
     ) -> List[int]:
         """Get dimension index values for a frame.
 
@@ -2146,7 +2148,13 @@ class Segmentation(SOPClass):
 
         """
         if not has_ref_frame_uid:
-            index_values = []
+            if segmentation_type == SegmentationTypeValues.LABELMAP:
+                # Here we have to return the "Frame Label" dimension value
+                # (which is used just to have one index since Referenced
+                # Segment cannot be used)
+                index_values = [1]
+            else:
+                index_values = []
         else:
             # Look up the position of the plane relative to the indexed
             # dimension.
@@ -2238,6 +2246,13 @@ class Segmentation(SOPClass):
         else:
             all_index_values = [segment_number] + index_values
         frame_content_item.DimensionIndexValues = all_index_values
+
+        # If this is an labelmap segmentation of an image that has no frame
+        # of reference, we need to create a dummy frame label to be pointed to
+        # as a dimension index because there is nothing else appropriate to
+        # use
+        if segment_number is None and coordinate_system is None:
+            frame_content_item.FrameLabel = "Segmentation Frame"
         pffg_item.FrameContentSequence = [frame_content_item]
         if has_ref_frame_uid:
             if coordinate_system == CoordinateSystemNames.SLIDE:
